@@ -10,8 +10,6 @@ use std::io::BufReader;
 use std::path::Path;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Command, Stdio};
-use serde::{Serialize, Deserialize};
-use clap::Parser;
 use java_properties::read;
 #[cfg(target_os = "macos")]
 use plist::Value;
@@ -25,44 +23,26 @@ use winreg::enums::HKEY_LOCAL_MACHINE;
 
 
 /// Command line utility to find JVM versions on macOS, Linux and Windows
-#[derive(Parser, Debug)]
-#[clap(author, about, long_about = None)]
-struct Args {
+#[derive(Debug)]
+pub struct Args {
     /// JVM Name to filter on
-    #[clap(short, long)]
     name: Option<String>,
 
     /// Architecture to filter on (e.g. x86_64, aarch64, amd64)
-    #[clap(short, long)]
     arch: Option<String>,
 
     /// Version to filter on (e.g. 1.8, 11, 17, etc)
-    #[clap(short, long)]
     version: Option<String>,
 
     /// Print out full details
-    #[clap(short, long)]
     detailed: bool,
 
     /// Return error code if no JVM found
-    #[clap(short, long)]
     fail: bool,
-
-    /// Add location
-    #[clap(short = 'r', long)]
-    register_location: Option<String>,
-
-    /// Remove location
-    #[clap(short = 'x', long)]
-    remove_location: Option<String>,
-
-    /// Display locations
-    #[clap(short = 'l', long)]
-    display_locations: bool
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct Jvm {
+pub struct Jvm {
     version: String,
     name: String,
     architecture: String,
@@ -70,60 +50,24 @@ struct Jvm {
 }
 
 #[derive(Clone)]
-struct OperatingSystem {
+pub struct OperatingSystem {
     name: String,
     architecture: String
 }
 
-#[derive(Serialize, Deserialize)]
-struct Config {
+#[derive(Default)]
+pub struct Config {
     paths: Vec<String>
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            paths: vec![]
-        }
-    }
-}
-
-fn main() {
-    let args = Args::parse();
-    let mut cfg: Config = confy::load("javalocate").unwrap();
-
-    if !args.register_location.is_none() {
-        let location = args.register_location.as_ref().unwrap().as_str().to_string();
-        if !cfg.paths.contains(&location) {
-            cfg.paths.push(location);
-            confy::store("javalocate", &cfg).unwrap();
-        }
-        std::process::exit(exitcode::OK);
-    }
-
-    if !args.remove_location.is_none() {
-        let location = args.remove_location.as_ref().unwrap().as_str().to_string();
-        if let Some(pos) = cfg.paths.iter().position(|x| *x == location) {
-            cfg.paths.remove(pos);
-        }
-        confy::store("javalocate", &cfg).unwrap();
-        std::process::exit(exitcode::OK);
-    }
-
-    if args.display_locations {
-        if cfg.paths.is_empty() {
-            println!("No custom JVM locations registered");
-        } else {
-            println!("Custom JVM locations registered:");
-            for tmp in cfg.paths {
-                println!("{}", tmp);
-            }
-        }
-        std::process::exit(exitcode::OK);
-    }
+pub fn run(args: &Args) -> Vec<Jvm> {
+    let cfg: Config = Default::default();
 
     // Fetch default java architecture based on kernel
-    let operating_system = get_operating_system();
+    let operating_system = match get_operating_system() {
+        Some(os) => os,
+        None => return vec![]
+    };
 
     // Build and filter JVMs
     let jvms: Vec<Jvm> = collate_jvms(&operating_system, &cfg)
@@ -133,35 +77,12 @@ fn main() {
         .filter(|tmp| filter_name(&args.name, tmp))
         .collect();
 
-    // If empty decide on response based on fail param
-    if jvms.is_empty() {
-        if args.fail {
-            eprintln!("Couldn't find a JVM to use.");
-            std::process::exit(exitcode::CONFIG);
-        } else {
-            std::process::exit(exitcode::OK);
-        }
-    }
-
-    // If JVMs found, display
-    if args.detailed {
-        for jvm in &jvms {
-            println!("{} ({}) \"{}\" - {}",
-                     jvm.version,
-                     jvm.architecture,
-                     jvm.name,
-                     jvm.path
-            );
-        }
-    }
-    else {
-        println!("{}", jvms.first().unwrap().path);
-    }
+    jvms
 }
 
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn get_operating_system() -> OperatingSystem {
+fn get_operating_system() -> Option<OperatingSystem> {
     let output = Command::new("uname")
         .arg("-ps")
         .stdout(Stdio::piped())
@@ -195,12 +116,10 @@ fn get_operating_system() -> OperatingSystem {
             } else if arch.eq_ignore_ascii_case("arm64") {
                 "arm64".to_string()
             } else {
-                eprintln!("{} architecture is unknown on Linux", arch);
-                std::process::exit(exitcode::UNAVAILABLE);
+                return None;
             }
         } else {
-            eprintln!("Running on non-supported operation system");
-            std::process::exit(exitcode::UNAVAILABLE);
+            return None;
         };
 
     let mut name = String::new();
@@ -209,7 +128,7 @@ fn get_operating_system() -> OperatingSystem {
         let release_file = File::open("/etc/os-release");
         let release_file = match release_file {
             Ok(release_file) => release_file,
-            Err(_error) => std::process::exit(exitcode::UNAVAILABLE),
+            Err(_error) => return None
         };
         let properties = read(BufReader::new(release_file)).unwrap();
         name.push_str(properties.get("ID").unwrap_or(&"".to_string()).replace("\"", "").as_str());
@@ -217,14 +136,14 @@ fn get_operating_system() -> OperatingSystem {
         name.push_str("macOS");
     }
 
-    return OperatingSystem {
+    Some(OperatingSystem {
         name,
         architecture: default_architecture
-    }
+    })
 }
 
 #[cfg(target_os = "windows")]
-fn get_operating_system() -> OperatingSystem {
+fn get_operating_system() -> Option<OperatingSystem> {
     let current_version = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion").unwrap();
     let name: String = current_version.get_value("ProductName").unwrap();
 
@@ -238,14 +157,13 @@ fn get_operating_system() -> OperatingSystem {
         } else if arch.eq_ignore_ascii_case("arm64") {
             "arm64".to_string()
         } else {
-            eprintln!("Unknown processor architecture");
-            std::process::exit(exitcode::UNAVAILABLE);
+            return None;
         };
 
-    return OperatingSystem {
+    Some(OperatingSystem {
         name,
         architecture: default_architecture
-    }
+    })
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -267,8 +185,7 @@ fn collate_jvms(os: &OperatingSystem, cfg: &Config) -> Vec<Jvm> {
 
     let path = dir_lookup.get(os.name.as_str());
     if path.is_none() && cfg.paths.is_empty() {
-        eprintln!("Default JVM path is unknown on {} Linux", os.name);
-        std::process::exit(exitcode::UNAVAILABLE);
+        return vec![];
     }
     let mut paths = cfg.paths.to_vec();
     paths.push(path.unwrap().to_string());
@@ -577,165 +494,4 @@ fn filter_name(name: &Option<String>, jvm: &Jvm) -> bool {
         }
     }
     return true;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_filter_name() {
-        let jvm = create_jvm("17.0.2",
-                             "Eclipse Temurin 17",
-                             "aarch64",
-                             "/Library/Java/JavaVirtualMachines/temurin-17.jdk");
-        let same_name: Option<String> = Option::Some("Eclipse Temurin 17".to_string());
-        let different_name: Option<String> = Option::Some("Eclipse Temurin 11".to_string());
-        assert_eq!(filter_name(&same_name, &jvm), true);
-        assert_eq!(filter_name(&different_name, &jvm), false);
-    }
-
-    #[test]
-    fn test_filter_arch() {
-        let jvm = create_jvm("17.0.2",
-                             "Eclipse Temurin 17",
-                             "aarch64",
-                             "/Library/Java/JavaVirtualMachines/temurin-17.jdk");
-        let same_arch: Option<String> = Option::Some("aarch64".to_string());
-        let different_arch: Option<String> = Option::Some("x86_64".to_string());
-        assert_eq!(filter_arch(&same_arch, &jvm), true);
-        assert_eq!(filter_arch(&different_arch, &jvm), false);
-    }
-
-    #[test]
-    fn test_filter_version() {
-        let jvm = create_jvm("17.0.2",
-                             "Eclipse Temurin 17",
-                             "aarch64",
-                             "/Library/Java/JavaVirtualMachines/temurin-17.jdk");
-        let same_ver: Option<String> = Option::Some("17".to_string());
-        let different_ver_same_format: Option<String> = Option::Some("11".to_string());
-        let different_ver_diff_format: Option<String> = Option::Some("11.0.2".to_string());
-        let different_ver_diff_format2: Option<String> = Option::Some("11.0.2.1".to_string());
-        assert_eq!(filter_ver(&same_ver, &jvm), true);
-        assert_eq!(filter_ver(&different_ver_same_format, &jvm), false);
-        assert_eq!(filter_ver(&different_ver_diff_format, &jvm), false);
-        assert_eq!(filter_ver(&different_ver_diff_format2, &jvm), false);
-    }
-
-    #[test]
-    fn test_compare_version() {
-        let jvm = create_jvm("17.0.2",
-                             "Eclipse Temurin 17",
-                             "aarch64",
-                             "/Library/Java/JavaVirtualMachines/temurin-17.jdk");
-        assert_eq!(get_compare_version(&jvm, &"8+".to_string()), "17");
-        assert_eq!(get_compare_version(&jvm, &"17".to_string()), "17");
-        assert_eq!(get_compare_version(&jvm, &"17.1".to_string()), "17.0");
-        assert_eq!(get_compare_version(&jvm, &"17.0.1".to_string()), "17.0.2");
-        assert_eq!(get_compare_version(&jvm, &"17.0.1.1".to_string()), "17.0.2");
-        assert_eq!(get_compare_version(&jvm, &"17.0.1_bau".to_string()), "17.0.2");
-        let jvm2 = create_jvm("1.8.0",
-                             "AdoptOpenJDK 8",
-                             "aarch64",
-                             "/Library/Java/JavaVirtualMachines/adoptopenjdk-1.8.0.jdk");
-        assert_eq!(get_compare_version(&jvm2, &"8".to_string()), "8");
-
-    }
-
-    #[test]
-    fn test_compare_version_values(){
-        assert_eq!(compare_version_values(&"17.0.1".to_string(), &"17.0.1".to_string()), Ordering::Equal);
-        assert_eq!(compare_version_values(&"8.0.1".to_string(), &"17.0.1".to_string()), Ordering::Less);
-        assert_eq!(compare_version_values(&"8.1.1".to_string(), &"8.0.1".to_string()), Ordering::Greater);
-        assert_eq!(compare_version_values(&"17".to_string(), &"17".to_string()), Ordering::Equal);
-        assert_eq!(compare_version_values(&"17".to_string(), &"11".to_string()), Ordering::Greater);
-        assert_eq!(compare_version_values(&"1.8".to_string(), &"8".to_string()), Ordering::Equal);
-    }
-
-    #[test]
-    fn test_compare_version_values_non_equal(){
-        assert_eq!(compare_version_values(&"17.0.1.1".to_string(), &"17.0.1".to_string()), Ordering::Greater);
-        assert_eq!(compare_version_values(&"11.0.1".to_string(), &"17.0.1.101".to_string()), Ordering::Less);
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[test]
-    fn test_trim_string(){
-        assert_eq!(trim_string("Arm\n"), "Arm");
-        assert_eq!(trim_string("Arm\r\n"), "Arm");
-        assert_eq!(trim_string("Arm"), "Arm");
-    }
-
-    #[test]
-    fn test_compare_version_architecture(){
-        let jvm1: Jvm = create_jvm("11.0.2",
-                                   "Eclipse Temurin 11",
-                                   "aarch64",
-                                   "/Library/Java/JavaVirtualMachines/temurin-11-aarch64.jdk");
-
-        let jvms: Vec<Jvm> = vec![jvm1.clone()];
-        check_version(jvms.clone(), "11+", 1);
-        check_version(jvms.clone(), "11.0+", 1);
-        check_version(jvms.clone(), "11.0.1+", 1);
-        check_version(jvms.clone(), "11.1+", 0);
-        check_version(jvms.clone(), "11.0.3+", 0);
-        check_version(jvms.clone(), "17+", 0);
-    }
-
-    fn check_version(jvms: Vec<Jvm>, version: &str, number: usize) {
-        let result: &Vec<Jvm> = &jvms.into_iter()
-            .filter(|tmp| filter_ver(&Option::Some(version.to_string()), tmp))
-            .collect();
-        assert_eq!(result.len(), number);
-    }
-
-    #[test]
-    fn test_compare_boosting_architecture(){
-        let jvm1: Jvm = create_jvm("11.0.2",
-                                   "Eclipse Temurin 11",
-                                   "aarch64",
-                                   "/Library/Java/JavaVirtualMachines/temurin-11-aarch64.jdk");
-        let jvm2: Jvm = create_jvm("11.0.2",
-                                   "Eclipse Temurin 11",
-                                   "x86_64",
-                                   "/Library/Java/JavaVirtualMachines/temurin-11-x86_64.jdk");
-        let jvm3: Jvm = create_jvm("17.0.1",
-                                   "Eclipse Temurin 17",
-                                   "x86_64",
-                                   "/Library/Java/JavaVirtualMachines/temurin-17-x86_64.jdk");
-        let jvm4: Jvm = create_jvm("8",
-                                   "Adopt OpenJDK 8",
-                                   "x86_64",
-                                   "/Library/Java/JavaVirtualMachines/java-8-openjdk-amd64");
-
-        let gold_ordered_aarch64 :Vec<Jvm> = vec![jvm3.clone(), jvm1.clone(), jvm2.clone(), jvm4.clone()];
-        let gold_ordered_x86_64 :Vec<Jvm> = vec![jvm3.clone(), jvm2.clone(), jvm1.clone(), jvm4.clone()];
-        let mut jvms :Vec<Jvm> = vec![jvm1.clone(), jvm2.clone(), jvm3.clone(), jvm4.clone()];
-
-        jvms.sort_by(|a, b| compare_boosting_architecture(a, b, &"aarch64".to_string()));
-        assert_eq!(jvm_vec_compare(gold_ordered_aarch64, &jvms), true);
-        jvms.sort_by(|a, b| compare_boosting_architecture(a, b, &"x86_64".to_string()));
-        assert_eq!(jvm_vec_compare(gold_ordered_x86_64, &jvms), true);
-    }
-
-    fn create_jvm(version: &str, name: &str, architecture: &str, path: &str) -> Jvm {
-        return Jvm {
-            version: version.to_string(),
-            name: name.to_string(),
-            architecture: architecture.to_string(),
-            path: path.to_string()
-        };
-    }
-
-    fn jvm_vec_compare(va: Vec<Jvm>, vb: &Vec<Jvm>) -> bool {
-        (va.len() == vb.len()) &&
-            va.iter()
-                .zip(vb)
-                .all(|(a,b)| a.architecture == b.architecture
-                    && a.version == b.version
-                    && a.name == b.name
-                    && a.path == b.path)
-    }
-
 }

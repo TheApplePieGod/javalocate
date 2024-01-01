@@ -32,13 +32,7 @@ pub struct Args {
     arch: Option<String>,
 
     /// Version to filter on (e.g. 1.8, 11, 17, etc)
-    version: Option<String>,
-
-    /// Print out full details
-    detailed: bool,
-
-    /// Return error code if no JVM found
-    fail: bool,
+    version: Option<String>
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

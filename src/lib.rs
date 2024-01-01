@@ -26,31 +26,31 @@ use winreg::enums::HKEY_LOCAL_MACHINE;
 #[derive(Debug)]
 pub struct Args {
     /// JVM Name to filter on
-    name: Option<String>,
+    pub name: Option<String>,
 
     /// Architecture to filter on (e.g. x86_64, aarch64, amd64)
-    arch: Option<String>,
+    pub arch: Option<String>,
 
     /// Version to filter on (e.g. 1.8, 11, 17, etc)
-    version: Option<String>
+    pub version: Option<String>
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Jvm {
-    version: String,
-    name: String,
-    architecture: String,
-    path: String
+    pub version: String,
+    pub name: String,
+    pub architecture: String,
+    pub path: String
 }
 
 #[derive(Clone)]
-pub struct OperatingSystem {
+struct OperatingSystem {
     name: String,
     architecture: String
 }
 
 #[derive(Default)]
-pub struct Config {
+struct Config {
     paths: Vec<String>
 }
 

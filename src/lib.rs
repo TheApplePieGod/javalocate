@@ -305,7 +305,7 @@ fn collate_jvms(os: &OperatingSystem, cfg: &Config) -> Vec<Jvm> {
         // Find software with JDK key
         for jdk in system.open_subkey(name).unwrap().enum_keys()
                             .map(|x| x.unwrap())
-                            .filter(|x| x.starts_with("JDK")) {
+                            .filter(|x| x.starts_with("JDK") || x.starts_with("Java Development Kit")) {
             // Next key should be JVM
             for jvm in system.open_subkey(format!("{}\\{}", software, jdk)).unwrap().enum_keys().map(|x| x.unwrap()) {
                 let mut jvm_path = String::new();

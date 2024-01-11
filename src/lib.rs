@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 use std::hash::Hash;
-use std::io::BufReader;
+use std::io::{self, BufReader};
 #[cfg(target_os = "windows")]
 use std::path::Path;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -64,12 +64,14 @@ pub fn run(args: &Args) -> Vec<Jvm> {
     };
 
     // Build and filter JVMs
-    let jvms: Vec<Jvm> = collate_jvms(&operating_system, &cfg)
-        .into_iter()
-        .filter(|tmp| filter_arch(&args.arch, tmp))
-        .filter(|tmp| filter_ver(&args.version, tmp))
-        .filter(|tmp| filter_name(&args.name, tmp))
-        .collect();
+    let jvms: Vec<Jvm> = match collate_jvms(&operating_system, &cfg) {
+        Ok(j) => j.into_iter()
+                  .filter(|tmp| filter_arch(&args.arch, tmp))
+                  .filter(|tmp| filter_ver(&args.version, tmp))
+                  .filter(|tmp| filter_name(&args.name, tmp))
+                  .collect(),
+        Err(_) => vec![]
+    };
 
     jvms
 }
@@ -168,7 +170,7 @@ fn trim_string(value: &str) -> &str {
 }
 
 #[cfg(target_os = "linux")]
-fn collate_jvms(os: &OperatingSystem, cfg: &Config) -> Vec<Jvm> {
+fn collate_jvms(os: &OperatingSystem, cfg: &Config) -> io::Result<Vec<Jvm>> {
     let mut jvms = HashSet::new();
     let dir_lookup = HashMap::from(
         [("ubuntu".to_string(), "/usr/lib/jvm".to_string()),
@@ -179,7 +181,7 @@ fn collate_jvms(os: &OperatingSystem, cfg: &Config) -> Vec<Jvm> {
 
     let path = dir_lookup.get(os.name.as_str());
     if path.is_none() && cfg.paths.is_empty() {
-        return vec![];
+        return Ok(vec![]);
     }
     let mut paths = cfg.paths.to_vec();
     paths.push(path.unwrap().to_string());
@@ -236,19 +238,19 @@ fn collate_jvms(os: &OperatingSystem, cfg: &Config) -> Vec<Jvm> {
     }
     let mut return_vec: Vec<Jvm> = jvms.into_iter().collect();
     return_vec.sort_by(|a, b| compare_boosting_architecture(a, b, &os.architecture));
-    return return_vec;
+    return Ok(return_vec);
 }
 
 #[cfg(target_os = "macos")]
-fn collate_jvms(os: &OperatingSystem, cfg: &Config) -> Vec<Jvm> {
+fn collate_jvms(os: &OperatingSystem, cfg: &Config) -> io::Result<Vec<Jvm>> {
     assert!(os.name.contains("macOS"));
     let mut jvms = HashSet::new();
     let mut paths = cfg.paths.to_vec();
     paths.push("/Library/Java/JavaVirtualMachines".to_string());
     for path in paths {
-        for path in fs::read_dir(path).unwrap() {
+        for path in fs::read_dir(path)? {
             let path = path.unwrap().path();
-            let metadata = fs::metadata(&path).unwrap();
+            let metadata = fs::metadata(&path)?;
 
             if metadata.is_dir() {
                 // Attempt to load the Info PList
@@ -273,7 +275,10 @@ fn collate_jvms(os: &OperatingSystem, cfg: &Config) -> Vec<Jvm> {
                 };
 
                 // Collate required information
-                let properties = read(BufReader::new(release_file)).unwrap();
+                let properties = match read(BufReader::new(release_file)) {
+                    Ok(p) => p,
+                    Err(err) => return Err(io::Error::new(io::ErrorKind::Other, err.to_string()))
+                };
                 let version = properties.get("JAVA_VERSION").unwrap_or(&"".to_string()).replace("\"", "");
                 let architecture = properties.get("OS_ARCH").unwrap_or(&"".to_string()).replace("\"", "");
 
@@ -290,11 +295,11 @@ fn collate_jvms(os: &OperatingSystem, cfg: &Config) -> Vec<Jvm> {
     }
     let mut return_vec: Vec<Jvm> = jvms.into_iter().collect();
     return_vec.sort_by(|a, b| compare_boosting_architecture(a, b, &os.architecture));
-    return return_vec;
+    return Ok(return_vec);
 }
 
 #[cfg(target_os = "windows")]
-fn collate_jvms(os: &OperatingSystem, cfg: &Config) -> Vec<Jvm> {
+fn collate_jvms(os: &OperatingSystem, cfg: &Config) -> io::Result<Vec<Jvm>> {
     assert!(os.name.contains("Windows"));
     let mut jvms = HashSet::new();
 
@@ -353,7 +358,7 @@ fn collate_jvms(os: &OperatingSystem, cfg: &Config) -> Vec<Jvm> {
     }
     let mut return_vec: Vec<Jvm> = jvms.into_iter().collect();
     return_vec.sort_by(|a, b| compare_boosting_architecture(a, b, &os.architecture));
-    return return_vec;
+    return Ok(return_vec);
 }
 
 #[cfg(target_os = "windows")]
